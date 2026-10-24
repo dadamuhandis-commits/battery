@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Batareya o'lchagich (shunt)</title>
+<style>
+  :root {
+    --bg: #eef3f1; --card: #ffffff; --ink: #14282b; --mute: #5d7276;
+    --accent: #0f766e; --line: #c9d6d3; --warn: #b42318; --amber: #b45309;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0e1b1d; --card: #162a2d; --ink: #e6f1ef; --mute: #8fa8ab;
+            --accent: #2dd4bf; --line: #2a4144; --warn: #f97066; --amber: #fbbf24; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0 auto; background: var(--bg); color: var(--ink); max-width: 460px;
+         font-family: system-ui, -apple-system, "Segoe UI", sans-serif; padding: 20px 16px 40px; }
+  h1 { font-size: 1.3rem; margin: 0 0 16px; }
+  button { font: inherit; border: 0; border-radius: 10px; padding: 12px 16px;
+           background: var(--accent); color: var(--bg); font-weight: 600; cursor: pointer; }
+  button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  #connect { width: 100%; margin-bottom: 20px; }
+  .big { background: var(--card); border-radius: 16px; padding: 20px; margin-bottom: 12px; }
+  .big b { display: block; font-size: 2.6rem; line-height: 1.1; }
+  .big span { color: var(--mute); }
+  #state { font-weight: 600; margin-top: 4px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
+  .box { background: var(--card); border-radius: 14px; padding: 14px; }
+  .box b { display: block; font-size: 1.4rem; }
+  .box span { color: var(--mute); font-size: .9rem; }
+  canvas { width: 100%; height: 130px; background: var(--card); border-radius: 14px; display: block; margin-bottom: 16px; }
+  .row { display: flex; gap: 8px; }
+  .row button { flex: 1; background: var(--card); color: var(--ink); border: 1px solid var(--line); }
+  #msg { color: var(--warn); min-height: 1.4em; margin-top: 12px; font-size: .95rem; }
+</style>
+</head>
+<body>
+  <h1>Batareya o'lchagich</h1>
+  <button id="connect">Bluetooth orqali ulanish</button>
+
+  <div class="big"><b id="v">0.00 V</b><span>Kuchlanish</span></div>
+  <div class="big"><b id="a">0.00 A</b><span>Tok</span>
+    <div id="state"></div></div>
+
+  <div class="grid">
+    <div class="box"><b id="w">0 W</b><span>Quvvat</span></div>
+    <div class="box"><b id="ah">0 Ah</b><span>Sig'im (Ah)</span></div>
+    <div class="box"><b id="wh">0 Wh</b><span>Energiya (Wh)</span></div>
+    <div class="box"><b id="n">0</b><span>O'lchovlar soni</span></div>
+  </div>
+
+  <canvas id="chart" width="440" height="130" aria-label="Kuchlanish grafigi"></canvas>
+
+  <div class="row">
+    <button id="reset">Ah/Wh nollash</button>
+    <button id="zero">Tok nolini o'rnatish</button>
+  </div>
+  <p id="msg"></p>
+
+<script>
+  const SERVICE = 0xFFE0, CHAR = 0xFFE1;   // HM-10 / AT-09
+  const $ = id => document.getElementById(id);
+  let ch = null, buffer = "", count = 0;
+  const hist = [];
+
+  $("connect").onclick = async () => {
+    if (!navigator.bluetooth) {
+      $("msg").textContent = "Android'da Chrome brauzerini ishlating.";
+      return;
+    }
+    try {
+      const dev = await navigator.bluetooth.requestDevice({ filters: [{ services: [SERVICE] }] });
+      dev.addEventListener("gattserverdisconnected", () => {
+        ch = null; $("connect").textContent = "Qayta ulanish";
+        $("msg").textContent = "Aloqa uzildi.";
+      });
+      const srv = await dev.gatt.connect();
+      const svc = await srv.getPrimaryService(SERVICE);
+      ch = await svc.getCharacteristic(CHAR);
+      await ch.startNotifications();
+      ch.addEventListener("characteristicvaluechanged", onData);
+      $("connect").textContent = "Ulangan: " + (dev.name || "o'lchagich");
+      $("msg").textContent = "";
+    } catch (e) {
+      $("msg").textContent = "Ulanib bo'lmadi. Bluetooth yoqilganini tekshiring.";
+    }
+  };
+
+  function onData(ev) {
+    buffer += new TextDecoder().decode(ev.target.value);
+    let i;
+    while ((i = buffer.indexOf("\n")) >= 0) {
+      const p = buffer.slice(0, i).trim().split(",");
+      buffer = buffer.slice(i + 1);
+      if (p[0] === "B" && p.length >= 6) show(p);
+    }
+  }
+
+  function show(p) {   // B,volt,amper,vatt,Ah,Wh
+    const v = parseFloat(p[1]), a = parseFloat(p[2]);
+    $("v").textContent = v.toFixed(2) + " V";
+    $("a").textContent = a.toFixed(2) + " A";
+    $("w").textContent = p[3] + " W";
+    $("ah").textContent = p[4] + " Ah";
+    $("wh").textContent = p[5] + " Wh";
+    $("n").textContent = ++count;
+    const s = $("state");
+    if (a > 0.05) { s.textContent = "Zaryadlanmoqda"; s.style.color = "var(--accent)"; }
+    else if (a < -0.05) { s.textContent = "Zaryadsizlanmoqda"; s.style.color = "var(--amber)"; }
+    else { s.textContent = "Tok yo'q"; s.style.color = "var(--mute)"; }
+    hist.push(v); if (hist.length > 120) hist.shift();
+    draw();
+  }
+
+  function draw() {
+    const c = $("chart"), g = c.getContext("2d"), W = c.width, H = c.height;
+    const css = getComputedStyle(document.documentElement);
+    g.clearRect(0, 0, W, H);
+    if (hist.length < 2) return;
+    const min = Math.min(...hist), max = Math.max(...hist);
+    const lo = min - 0.2, hi = max + 0.2;
+    g.strokeStyle = css.getPropertyValue("--accent"); g.lineWidth = 2; g.beginPath();
+    hist.forEach((v, i) => {
+      const x = i / (hist.length - 1) * (W - 20) + 10;
+      const y = H - 18 - (v - lo) / (hi - lo) * (H - 36);
+      i ? g.lineTo(x, y) : g.moveTo(x, y);
+    });
+    g.stroke();
+    g.fillStyle = css.getPropertyValue("--mute"); g.font = "12px sans-serif";
+    g.fillText(max.toFixed(2) + " V", 10, 14);
+    g.fillText(min.toFixed(2) + " V", 10, H - 4);
+  }
+
+  function send(t) {
+    if (!ch) { $("msg").textContent = "Avval Bluetooth orqali ulaning."; return; }
+    ch.writeValue(new TextEncoder().encode(t + "\n"))
+      .catch(() => $("msg").textContent = "Buyruq yuborilmadi.");
+  }
+  $("reset").onclick = () => send("R");
+  $("zero").onclick = () => send("Z");
+</script>
+
+  <details style="margin-top:24px">
+    <summary style="font-weight:600;cursor:pointer;padding:8px 0">Nano kodi (shunt varianti)</summary>
+    <button id="copycode" style="width:100%;margin:8px 0">Kodni nusxalash</button>
+    <pre id="code" style="background:var(--card);border-radius:12px;padding:12px;overflow-x:auto;font-size:.78rem;line-height:1.4">// Batareya o&#x27;lchagich (ACS712 siz): Arduino Nano + Bluetooth (HM-10) + shunt rezistor
+// Telefon ilovasi (batareya_ilova.html) o&#x27;zgarishsiz ishlaydi.
+//
+// Ulanish (faqat ZARYADSIZLANISH tokini o&#x27;lchaydi, &quot;low-side&quot; shunt):
+//   Batareya (+)  -&gt;  yuklama (+)
+//   Yuklama (-)   -&gt;  shunt rezistor  -&gt;  batareya (-)
+//   Nano GND      -&gt;  batareya (-)  (shuntning batareya tomoni)
+//   Nano A0       -&gt;  shuntning yuklama tomoni (yuklama (-) bilan bir nuqta)
+//   Nano A1       -&gt;  kuchlanish moduli S (0-25V), moduli (-) -&gt; GND, (+) -&gt; batareya (+)
+//   Bluetooth TX -&gt; D2, RX -&gt; D3 (1k + 2k bo&#x27;luvchi orqali)
+//
+// Shunt: 0.1 Ohm -&gt; maksimum ~10A (rezistor 10W), 0.05 Ohm -&gt; ~20A.
+// Quvvatni hisoblang: P = I*I*R, rezistor quvvati bundan 2 barobar katta bo&#x27;lsin.
+//
+// Buyruqlar: R = Ah/Wh nollash, Z = tok nolini qayta o&#x27;rnatish
+// Har soniyada yuboriladi:  B,volt,amper,vatt,Ah,Wh
+
+#include &lt;SoftwareSerial.h&gt;
+
+SoftwareSerial bt(2, 3);   // RX, TX
+
+const int CURRENT_PIN = A0;
+const int VOLT_PIN    = A1;
+
+const float SHUNT_OHM  = 0.10;   // shunt qarshiligi (Om)
+const float VOLT_RATIO = 5.0;    // 25V modul: 5:1
+const float VREF_VOLT  = 5.0;    // Nano 5V (multimetr bilan o&#x27;lchab to&#x27;g&#x27;rilang)
+const float VREF_INT   = 1.10;   // ichki etalon (har Nano&#x27;da 1.0-1.2 oralig&#x27;ida, to&#x27;g&#x27;rilang)
+
+float zeroV = 0;                 // tok nol bo&#x27;lgandagi A0 kuchlanishi
+float volts = 0, amps = 0, watts = 0, ampHours = 0, wattHours = 0;
+unsigned long lastSend = 0;
+
+// Etalonni almashtirib o&#x27;qish: almashgandan keyin birinchi o&#x27;lchovlar tashlab yuboriladi
+float readAvg(int pin, int samples, bool internalRef) {
+  analogReference(internalRef ? INTERNAL : DEFAULT);
+  delay(5);
+  for (int i = 0; i &lt; 5; i++) analogRead(pin);   // tashlab yuboriladi
+  long s = 0;
+  for (int i = 0; i &lt; samples; i++) s += analogRead(pin);
+  float ref = internalRef ? VREF_INT : VREF_VOLT;
+  return (s / (float)samples) * ref / 1023.0;
+}
+
+void calibrateZero() {
+  delay(300);
+  zeroV = readAvg(CURRENT_PIN, 500, true);
+}
+
+void setup() {
+  bt.begin(9600);
+  calibrateZero();
+  lastSend = millis();
+}
+
+void loop() {
+  while (bt.available()) {
+    char c = bt.read();
+    if (c == &#x27;R&#x27;) { ampHours = 0; wattHours = 0; }
+    else if (c == &#x27;Z&#x27;) calibrateZero();
+  }
+
+  unsigned long now = millis();
+  if (now - lastSend &gt;= 1000) {
+    float dtH = (now - lastSend) / 3600000.0;
+    lastSend = now;
+
+    volts = readAvg(VOLT_PIN, 100, false) * VOLT_RATIO;
+    float vShunt = readAvg(CURRENT_PIN, 200, true) - zeroV;
+    amps = vShunt / SHUNT_OHM;
+    if (amps &lt; 0.03) amps = 0;           // shovqinni kesish (faqat zaryadsizlanish)
+
+    watts = volts * amps;
+    ampHours  -= amps * dtH;             // ilova: manfiy = zaryadsizlanish
+    wattHours -= watts * dtH;
+
+    // Ilova bilan moslik uchun zaryadsizlanishni manfiy tok sifatida yuboramiz
+    bt.print(&quot;B,&quot;);
+    bt.print(volts, 2);      bt.print(&#x27;,&#x27;);
+    bt.print(-amps, 2);      bt.print(&#x27;,&#x27;);
+    bt.print(-watts, 1);     bt.print(&#x27;,&#x27;);
+    bt.print(ampHours, 3);   bt.print(&#x27;,&#x27;);
+    bt.println(wattHours, 2);
+  }
+}
+</pre>
+    <p style="color:var(--mute);font-size:.9rem">Nusxalab, kompyuterdagi Arduino IDE ga qo'ying va Nano ga yuklang.</p>
+  </details>
+<script>
+  document.getElementById("copycode").onclick = async () => {
+    const t = document.getElementById("code").textContent;
+    try { await navigator.clipboard.writeText(t); document.getElementById("copycode").textContent = "Nusxalandi"; }
+    catch (e) {
+      const r = document.createRange(); r.selectNodeContents(document.getElementById("code"));
+      const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+      document.getElementById("copycode").textContent = "Matn belgilandi, nusxalang";
+    }
+  };
+</script>
+</body>
+</html>
